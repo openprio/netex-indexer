@@ -1,21 +1,17 @@
 extern crate walkdir;
 
 use crate::xml_util::read_to_end_into_buffer;
-use time::macros::datetime;
 
 use time::format_description::well_known::Iso8601;
 use time::PrimitiveDateTime;
 
-use std::{str, ops::Deref, io::Read};
+use std::str;
 
-use rayon::iter::ParallelIterator;
-
-use quick_xml::events::{Event, BytesText};
+use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use time::Date;
-//use serde::Deserialize;
-use quick_xml::de::{Deserializer, XmlRead};
-// use rayon::prelude::*;
+
+use quick_xml::de::Deserializer;
 
 use ::serde::Deserialize;
 
@@ -30,9 +26,9 @@ struct XMLVersion {
 impl XMLVersion {
     fn convert_to_version(&self) -> Version {
         let start_date: PrimitiveDateTime =
-        PrimitiveDateTime::parse(&self.start_date, &Iso8601::DEFAULT).unwrap();
-        let end_date: PrimitiveDateTime =
             PrimitiveDateTime::parse(&self.start_date, &Iso8601::DEFAULT).unwrap();
+        let end_date: PrimitiveDateTime =
+            PrimitiveDateTime::parse(&self.end_date, &Iso8601::DEFAULT).unwrap();
 
         return Version {
             start_date: start_date.date(),
@@ -48,17 +44,20 @@ pub struct Version {
     version_type: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct NeTExVersion {
-    publication_time_stamp: PrimitiveDateTime,
-    partition: String,
-    netex_version: String,
-    start_date: Date,
-    end_date: Date,
-    version_type: String,
+    pub file_name: String,
+    pub data_owner_code: String,
+    pub publication_time_stamp: PrimitiveDateTime,
+    pub partition: String,
+    pub netex_version: String,
+    pub start_date: Date,
+    pub end_date: Date,
+    pub version_type: String,
+    pub path: String,
 }
 
-pub fn parse_netex(s: String) -> Option<NeTExVersion> {
+pub fn parse_netex(s: String, file_name: String, path: String) -> Option<NeTExVersion> {
     let mut reader = Reader::from_str(&s);
     let mut junk_buf: Vec<u8> = Vec::new();
     let mut buf = Vec::new();
@@ -67,6 +66,7 @@ pub fn parse_netex(s: String) -> Option<NeTExVersion> {
     let mut netex_version = None;
     let mut partition = None;
     let mut publication_time_stamp = None;
+    let mut data_owner_code = None;
     loop {
         // NOTE: this is the generic case when we don't know about the input BufRead.
         // when the input is a &str or a &[u8], we don't actually need to use another
@@ -76,6 +76,17 @@ pub fn parse_netex(s: String) -> Option<NeTExVersion> {
             // exits the loop when reaching end of file
             Ok(Event::Eof) => break,
             Ok(Event::Empty(e)) => match e.name().as_ref() {
+                b"DefaultCodespaceRef" => {
+                    let codespace_ref = e.attributes().find(|item| {
+                        if let Ok(item) = item {
+                            return item.key.0 == b"ref";
+                        }
+                        false
+                    });
+                    let reft = codespace_ref.unwrap().unwrap().unescape_value().unwrap();
+                    data_owner_code = Some(reft.split(":").last().unwrap().to_string());
+                }
+
                 b"DefaultResponsibilitySetRef" => {
                     let responsibility_ref = e.attributes().find(|item| {
                         if let Ok(item) = item {
@@ -84,10 +95,10 @@ pub fn parse_netex(s: String) -> Option<NeTExVersion> {
                         false
                     });
                     let reft = responsibility_ref
-                    .unwrap()
-                    .unwrap()
-                    .unescape_value()
-                    .unwrap();
+                        .unwrap()
+                        .unwrap()
+                        .unescape_value()
+                        .unwrap();
                     partition = Some(reft.to_string());
                 }
                 b"TypeOfFrameRef" => {
@@ -97,7 +108,12 @@ pub fn parse_netex(s: String) -> Option<NeTExVersion> {
                         }
                         false
                     });
-                    let version = netex_version_value.unwrap().unwrap().unescape_value().unwrap();
+                    println!("{}", file_name);
+                    let version = netex_version_value
+                        .unwrap()
+                        .unwrap()
+                        .unescape_value()
+                        .unwrap();
                     netex_version = Some(version.to_string());
                 }
                 _ => {}
@@ -109,30 +125,39 @@ pub fn parse_netex(s: String) -> Option<NeTExVersion> {
                     let mut deserializer = Deserializer::from_str(version_element);
                     let xml_version = XMLVersion::deserialize(&mut deserializer).unwrap();
                     version = Some(xml_version.convert_to_version());
-                },
-                b"PublicationTimestamp" => {
-                    match reader.read_event_into(&mut buf) {
-                        Ok(Event::Text(e)) => {
-                            publication_time_stamp =
-                                Some(PrimitiveDateTime::parse(&e.unescape().unwrap(), &Iso8601::DEFAULT).unwrap());
-                        }
-                        _ => {}
-                    }
                 }
+                b"PublicationTimestamp" => match reader.read_event_into(&mut buf) {
+                    Ok(Event::Text(e)) => {
+                        publication_time_stamp = Some(
+                            PrimitiveDateTime::parse(&e.unescape().unwrap(), &Iso8601::DEFAULT)
+                                .unwrap(),
+                        );
+                    }
+                    _ => {}
+                },
                 _ => (),
             },
             _ => (),
         }
-        if version.is_some() && netex_version.is_some() && partition.is_some() && publication_time_stamp.is_some() {
+
+        if version.is_some()
+            && netex_version.is_some()
+            && partition.is_some()
+            && publication_time_stamp.is_some()
+            && data_owner_code.is_some()
+        {
             let version = version.unwrap();
             return Some(NeTExVersion {
+                file_name: file_name,
+                data_owner_code: data_owner_code.unwrap(),
                 publication_time_stamp: publication_time_stamp.unwrap(),
                 partition: partition.unwrap(),
                 netex_version: netex_version.unwrap(),
                 start_date: version.start_date,
                 end_date: version.end_date,
-                version_type: version.version_type
-            })
+                version_type: version.version_type,
+                path: path,
+            });
         }
         buf.clear();
     }
