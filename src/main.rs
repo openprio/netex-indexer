@@ -63,6 +63,15 @@ fn is_not_excluded(entry: &walkdir::DirEntry) -> bool {
             return false;
         }
     }
+
+    let excluded_files = vec!["vehicle"]; // Files to exclude
+
+    for excluded in excluded_files {
+        if entry.file_name().to_str().unwrap().contains(excluded) {
+            return false;
+        }
+    }
+
     true
 }
 

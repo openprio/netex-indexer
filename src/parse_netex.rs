@@ -23,22 +23,47 @@ struct XMLVersion {
     version_type: String,
 }
 
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "PascalCase")]
+struct XMLValidBetween {
+    from_date: String,
+    to_date: String,
+}
+
 impl XMLVersion {
-    fn convert_to_version(&self) -> Version {
+    fn convert_to_version(&self) -> ValidBetween {
         let start_date: PrimitiveDateTime =
             PrimitiveDateTime::parse(&self.start_date, &Iso8601::DEFAULT).unwrap();
         let end_date: PrimitiveDateTime =
             PrimitiveDateTime::parse(&self.end_date, &Iso8601::DEFAULT).unwrap();
 
-        return Version {
+        return ValidBetween {
             start_date: start_date.date(),
             end_date: end_date.date(),
             version_type: self.version_type.clone(),
         };
     }
 }
+
+impl XMLValidBetween {
+    fn convert_to_valid_between(&self) -> ValidBetween {
+        let start_date: PrimitiveDateTime =
+            PrimitiveDateTime::parse(&self.from_date, &Iso8601::DEFAULT).unwrap();
+        let end_date: PrimitiveDateTime =
+            PrimitiveDateTime::parse(&self.to_date, &Iso8601::DEFAULT).unwrap();
+
+        println!("Parsed ValidBetween from {} to {}", start_date, end_date);
+
+        return ValidBetween {
+            start_date: start_date.date(),
+            end_date: end_date.date(),
+            version_type: "baseline".to_string(),
+        };
+    }
+}
+
 #[derive(Debug)]
-pub struct Version {
+pub struct ValidBetween {
     start_date: Date,
     end_date: Date,
     version_type: String,
@@ -62,7 +87,7 @@ pub fn parse_netex(s: String, file_name: String, path: String) -> Option<NeTExVe
     let mut junk_buf: Vec<u8> = Vec::new();
     let mut buf = Vec::new();
 
-    let mut version = None;
+    let mut valid_between = None;
     let mut netex_version = None;
     let mut partition = None;
     let mut publication_time_stamp = None;
@@ -124,7 +149,15 @@ pub fn parse_netex(s: String, file_name: String, path: String) -> Option<NeTExVe
                     let version_element = str::from_utf8(&result).unwrap();
                     let mut deserializer = Deserializer::from_str(version_element);
                     let xml_version = XMLVersion::deserialize(&mut deserializer).unwrap();
-                    version = Some(xml_version.convert_to_version());
+                    valid_between = Some(xml_version.convert_to_version());
+                }
+                b"ValidBetween" => {
+                    let result = read_to_end_into_buffer(&mut reader, &e, &mut junk_buf).unwrap();
+                    let version_element = str::from_utf8(&result).unwrap();
+                    let mut deserializer = Deserializer::from_str(version_element);
+                    let xml_valid_between =
+                        XMLValidBetween::deserialize(&mut deserializer).unwrap();
+                    valid_between = Some(xml_valid_between.convert_to_valid_between());
                 }
                 b"PublicationTimestamp" => match reader.read_event_into(&mut buf) {
                     Ok(Event::Text(e)) => {
@@ -140,22 +173,22 @@ pub fn parse_netex(s: String, file_name: String, path: String) -> Option<NeTExVe
             _ => (),
         }
 
-        if version.is_some()
+        if valid_between.is_some()
             && netex_version.is_some()
             && partition.is_some()
             && publication_time_stamp.is_some()
             && data_owner_code.is_some()
         {
-            let version = version.unwrap();
+            let valid_between = valid_between.unwrap();
             return Some(NeTExVersion {
                 file_name: file_name,
                 data_owner_code: data_owner_code.unwrap(),
                 publication_time_stamp: publication_time_stamp.unwrap(),
                 partition: partition.unwrap(),
                 netex_version: netex_version.unwrap(),
-                start_date: version.start_date,
-                end_date: version.end_date,
-                version_type: version.version_type,
+                start_date: valid_between.start_date,
+                end_date: valid_between.end_date,
+                version_type: valid_between.version_type,
                 path: path,
             });
         }
